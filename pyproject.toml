@@ -1,0 +1,25 @@
+[tool.poetry]
+name = "ibs-test-task"
+version = "0.1.0"
+description = ""
+authors = ["Lev Uspensky"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+aiogram = "^3.20.0.post0"
+fastapi = {extras = ["standard"], version = "^0.115.14"}
+sqlalchemy = "^2.0.41"
+asyncpg = "^0.30.0"
+alembic = "^1.16.2"
+bcrypt = "^4.3.0"
+passlib = {extras = ["bcrypt"], version = "^1.7.4"}
+jinja2 = "^3.1.6"
+pydantic-settings = "^2.10.1"
+pyjwt = "^2.10.1"
+ollama = "^0.5.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

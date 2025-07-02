@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Модерация чатов</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        .chat-item {
+            @apply p-3 border-b cursor-pointer hover:bg-gray-50;
+        }
+        .chat-message {
+            @apply mb-3 p-3 rounded-lg max-w-[80%];
+        }
+        .user-message {
+            @apply bg-gray-200 self-start;
+        }
+        .llm-message {
+            @apply bg-yellow-100 self-start;
+        }
+        .admin-message {
+            @apply bg-blue-100 self-end;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto p-4">
+        <h1 class="text-2xl font-bold mb-6">Модерация чатов</h1>
+
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div class="bg-white rounded-lg shadow-md p-4">
+                <h2 class="text-lg font-semibold mb-4">Ваши чаты</h2>
+                <div id="chats-list" class="space-y-2">
+                    <div class="text-center text-gray-500 py-4">
+                        <i class="fas fa-spinner fa-spin"></i> Загрузка...
+                    </div>
+                </div>
+            </div>
+
+            <div class="md:col-span-2 bg-white rounded-lg shadow-md p-4">
+                <div id="chat-panel" class="hidden">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 id="chat-title" class="text-lg font-semibold"></h2>
+                        <button id="close-chat" class="text-gray-500 hover:text-gray-700">
+                            <i class="fas fa-times"></i> Закрыть
+                        </button>
+                    </div>
+
+                    <div id="chat-messages" class="mb-4 min-h-[300px] max-h-[400px] overflow-y-auto p-2 border rounded-lg"></div>
+
+                    <div id="moderation-block" class="mb-4 p-3 bg-yellow-50 rounded-lg border border-yellow-200 hidden">
+                        <h3 class="font-medium text-yellow-800 mb-2">Ответ LLM требует модерации</h3>
+                        <div id="llm-response" class="mb-3 p-3 bg-white rounded border"></div>
+                        <div class="flex space-x-2">
+                            <button id="approve-button" class="flex-1 bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg">
+                                <i class="fas fa-check mr-2"></i>Одобрить
+                            </button>
+                            <button id="edit-button" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg">
+                                <i class="fas fa-edit mr-2"></i>Редактировать
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="edit-block" class="hidden mb-4">
+                        <textarea id="message-input" rows="8" class="w-full p-3 border rounded-l-lg" placeholder="Отредактируйте ответ здесь..."
+                        ></textarea>
+                        <button id="send-button" class="mt-3 w-full bg-blue-500 hover:bg-blue-600 text-white px-4 py-3 rounded-lg font-semibold flex items-center justify-center">
+                            <i class="fas fa-paper-plane mr-2"></i>Отправить
+                        </button>
+                    </div>
+                </div>
+
+                <div id="no-chat-selected" class="text-center py-8 text-gray-500">
+                    <i class="fas fa-comments text-3xl mb-2"></i>
+                    <p>Выберите чат из списка для просмотра</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let currentTaskId = null;
+        let moderationTasks = [];
+
+        async function fetchInitialTasks() {
+            try {
+                const response = await fetch('/admin/chats', {
+                    method: 'GET',
+                    headers: { 'Accept': 'application/json' }
+                });
+
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        alert('Ваша сессия истекла. Пожалуйста, войдите снова.');
+                        window.location.href = '/login';
+                    }
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+
+                const tasks = await response.json();
+
+                tasks.forEach(task => {
+                    if (!moderationTasks.some(t => t.chat_id === task.chat_id)) {
+                        moderationTasks.push(task);
+                    }
+                });
+
+                renderTasksList(moderationTasks);
+
+            } catch (error) {
+                console.error("Could not fetch initial tasks:", error);
+                const container = document.getElementById('chats-list');
+                container.innerHTML = '<div class="text-center text-red-500 py-4">Не удалось загрузить задачи</div>';
+            }
+        }
+
+        function initWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            ws = new WebSocket(`${protocol}//${window.location.host}/ws/admin`);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected successfully!');
+                document.getElementById('chats-list').innerHTML = '<div class="text-center text-gray-500 py-4">Нет задач на модерацию</div>';
+            };
+
+            ws.onmessage = handleWebSocketMessage;
+
+            ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                alert('Ошибка подключения к серверу. Попробуйте обновить страницу.');
+            };
+
+            ws.onclose = (event) => {
+                console.log('WebSocket disconnected', event);
+                if (event.code === 1008) {
+                    alert('Сессия истекла. Пожалуйста, войдите снова.');
+                    window.location.href = '/login';
+                }
+            };
+        }
+
+        function handleWebSocketMessage(event) {
+            try {
+                const data = JSON.parse(event.data);
+                console.log('Received:', data);
+
+                switch (data.type) {
+                    case 'new_moderation_task':
+                        addNewTask(data.task);
+                        break;
+
+                    case 'chat_status':
+                        removeTaskFromList(data.chat_id);
+                        break;
+                }
+            } catch (error) {
+                console.error('Error parsing message:', error);
+            }
+        }
+
+        function renderTasksList(tasks) {
+            moderationTasks = tasks;
+            const container = document.getElementById('chats-list');
+            container.innerHTML = '';
+
+            if (moderationTasks.length === 0) {
+                container.innerHTML = '<div class="text-center text-gray-500 py-4">Нет задач на модерацию</div>';
+                return;
+            }
+
+            moderationTasks.forEach(task => {
+                const taskElement = document.createElement('div');
+                taskElement.className = `chat-item ${task.chat_id === currentTaskId ? 'border-l-4 border-blue-500 bg-blue-50' : ''}`;
+                taskElement.dataset.taskId = task.chat_id;
+
+                taskElement.innerHTML = `
+                    <div class="font-medium">Чат #${task.chat_id}</div>
+                    <div class="text-sm text-gray-600">Пользователь: ${task.user_name}</div>
+                    <div class="text-xs text-gray-500 mt-1">
+                        ${new Date(task.created_at).toLocaleString()}
+                    </div>
+                `;
+
+                taskElement.addEventListener('click', () => openTask(task.chat_id));
+                container.appendChild(taskElement);
+            });
+        }
+
+        function addNewTask(task) {
+            if (!moderationTasks.some(t => t.chat_id === task.chat_id)) {
+                moderationTasks.push(task);
+                renderTasksList(moderationTasks);
+            }
+        }
+
+        function removeTaskFromList(chatId) {
+            moderationTasks = moderationTasks.filter(t => t.chat_id !== chatId);
+            renderTasksList(moderationTasks);
+
+            if (currentTaskId === chatId) {
+                document.getElementById('chat-panel').classList.add('hidden');
+                document.getElementById('no-chat-selected').classList.remove('hidden');
+                currentTaskId = null;
+            }
+        }
+
+        function openTask(taskId) {
+            currentTaskId = taskId;
+
+            const task = moderationTasks.find(t => t.chat_id === taskId);
+            if (!task) return;
+
+            renderTasksList(moderationTasks);
+
+            document.getElementById('chat-panel').classList.remove('hidden');
+            document.getElementById('no-chat-selected').classList.add('hidden');
+            document.getElementById('chat-title').textContent = `Чат #${task.chat_id} с ${task.user_name}`;
+
+            const messagesContainer = document.getElementById('chat-messages');
+            messagesContainer.innerHTML = '';
+
+            const userMessageElement = document.createElement('div');
+            userMessageElement.className = 'chat-message user-message';
+            userMessageElement.innerHTML = `
+                <div class="font-medium">${task.user_name}</div>
+                <div class="mt-1">${task.user_message}</div>
+            `;
+            messagesContainer.appendChild(userMessageElement);
+
+            document.getElementById('moderation-block').classList.remove('hidden');
+            document.getElementById('edit-block').classList.add('hidden');
+            document.getElementById('llm-response').textContent = task.llm_response;
+            currentLLMResponse = task.llm_response;
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initWebSocket();
+            fetchInitialTasks();
+
+            document.getElementById('approve-button').addEventListener('click', () => {
+                if (currentTaskId && ws && ws.readyState === WebSocket.OPEN) {
+                    const llmResponseElement = document.getElementById('llm-response');
+
+                    const messageContent = llmResponseElement.textContent;
+
+                    ws.send(JSON.stringify({
+                        type: 'send',
+                        chat_id: currentTaskId,
+                        content: messageContent
+                    }));
+
+                    removeTaskFromList(currentTaskId);
+                }
+            });
+
+            document.getElementById('edit-button').addEventListener('click', () => {
+                document.getElementById('moderation-block').classList.add('hidden');
+
+                document.getElementById('edit-block').classList.remove('hidden');
+
+                const messageInput = document.getElementById('message-input');
+                messageInput.value = currentLLMResponse;
+
+                messageInput.focus();
+            });
+
+            document.getElementById('send-button').addEventListener('click', () => {
+                const messageInput = document.getElementById('message-input');
+                const editedMessage = messageInput.value.trim();
+
+                if (editedMessage && currentTaskId && ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'send',
+                        chat_id: currentTaskId,
+                        content: editedMessage
+                    }));
+                    removeTaskFromList(currentTaskId);
+                }
+            });
+            document.getElementById('close-chat').addEventListener('click', () => {
+                if (currentTaskId) {
+                    removeTaskFromList(currentTaskId);
+                }
+            });
+        });
+    </script>
+</body>
+</html>
